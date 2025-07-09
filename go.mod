@@ -1,4 +1,4 @@
-module git-cleanup
+module github.com/mskelton/git-cleanup
 
 go 1.21
 
