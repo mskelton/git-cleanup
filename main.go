@@ -14,6 +14,17 @@ import (
 
 const charSet = 14
 
+func runWithSpinner(suffix string, operation func() error) error {
+	s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
+	s.Suffix = " " + suffix
+	s.Start()
+
+	err := operation()
+
+	s.Stop()
+	return err
+}
+
 func runCommand(cmd *exec.Cmd) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -165,46 +176,34 @@ func main() {
 	}
 
 	if currentBranch != defaultBranch {
-		s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-		s.Suffix = " Checking out default branch"
-		s.Start()
-
-		if err := checkoutBranch(defaultBranch); err != nil {
-			s.Stop()
+		if err := runWithSpinner("Checking out default branch", func() error {
+			return checkoutBranch(defaultBranch)
+		}); err != nil {
 			red.Printf("Error checking out default branch: %v\n", err)
 			os.Exit(1)
 		}
 
-		s.Stop()
 		fmt.Printf("✔ Checked out default branch: %s\n", defaultBranch)
 	}
 
 	// Pull latest changes
-	s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-	s.Suffix = " Pulling latest changes"
-	s.Start()
-
-	if err := pullBranch(defaultBranch); err != nil {
-		s.Stop()
+	if err := runWithSpinner("Pulling latest changes", func() error {
+		return pullBranch(defaultBranch)
+	}); err != nil {
 		red.Printf("Error pulling latest changes: %v\n", err)
 		os.Exit(1)
 	}
 
-	s.Stop()
 	fmt.Printf("✔ Pulled latest changes from %s\n", defaultBranch)
 
 	// Prune branches
-	s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-	s.Suffix = " Pruning local branches"
-	s.Start()
-
-	if err := fetchPrune(); err != nil {
-		s.Stop()
+	if err := runWithSpinner("Pruning local branches", func() error {
+		return fetchPrune()
+	}); err != nil {
 		red.Printf("Error pruning branches: %v\n", err)
 		os.Exit(1)
 	}
 
-	s.Stop()
 	fmt.Println("✔ Pruned local branches")
 
 	// Get deleted branches
@@ -216,17 +215,13 @@ func main() {
 
 	// Delete regular branches
 	for _, branch := range deletedBranches {
-		s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-		s.Suffix = fmt.Sprintf(" Deleting branch: %s", branch)
-		s.Start()
-
-		if err := deleteBranch(branch); err != nil {
-			s.Stop()
+		if err := runWithSpinner(fmt.Sprintf("Deleting branch: %s", branch), func() error {
+			return deleteBranch(branch)
+		}); err != nil {
 			red.Printf("Error deleting branch %s: %v\n", branch, err)
 			continue
 		}
 
-		s.Stop()
 		fmt.Printf("✔ Deleted branch: %s\n", branch)
 	}
 
@@ -242,23 +237,18 @@ func main() {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-		s.Suffix = fmt.Sprintf(" Deleting worktree: %s", relativePath)
-		s.Start()
-
-		if err := removeWorktree(worktreePath); err != nil {
-			s.Stop()
+		if err := runWithSpinner(fmt.Sprintf("Deleting worktree: %s", relativePath), func() error {
+			return removeWorktree(worktreePath)
+		}); err != nil {
 			red.Printf("Error removing worktree %s: %v\n", relativePath, err)
 			continue
 		}
 
 		if err := deleteBranch(branch); err != nil {
-			s.Stop()
 			red.Printf("Error deleting branch %s: %v\n", branch, err)
 			continue
 		}
 
-		s.Stop()
 		fmt.Printf("✔ Deleted worktree: %s\n", relativePath)
 	}
 
