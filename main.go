@@ -12,31 +12,7 @@ import (
 	"github.com/fatih/color"
 )
 
-type Status struct {
-	lines []string
-}
-
-func (s *Status) Add(line string) {
-	s.lines = append(s.lines, line)
-	if len(s.lines) > 3 {
-		s.lines = s.lines[1:]
-	}
-}
-
-func (s *Status) Print() {
-	// Clear previous lines
-	for i := 0; i < 3; i++ {
-		fmt.Print("\033[2K\033[A")
-	}
-
-	// Print current status
-	for i, line := range s.lines {
-		fmt.Printf("\033[2K%s\n", line)
-		if i < len(s.lines)-1 {
-			fmt.Print("\033[2K\n")
-		}
-	}
-}
+const charSet = 14
 
 func runCommand(cmd *exec.Cmd) error {
 	output, err := cmd.CombinedOutput()
@@ -171,7 +147,6 @@ func removeWorktree(path string) error {
 }
 
 func main() {
-	status := &Status{}
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
@@ -190,7 +165,7 @@ func main() {
 	}
 
 	if currentBranch != defaultBranch {
-		s := spinner.New(spinner.CharSets[9], 100*time.Millisecond)
+		s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 		s.Suffix = " Checking out default branch"
 		s.Start()
 
@@ -201,11 +176,11 @@ func main() {
 		}
 
 		s.Stop()
-		status.Add(green.Sprintf("✔ Checked out default branch: %s", defaultBranch))
+		fmt.Printf("✔ Checked out default branch: %s\n", defaultBranch)
 	}
 
 	// Pull latest changes
-	s := spinner.New(spinner.CharSets[9], 100*time.Millisecond)
+	s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 	s.Suffix = " Pulling latest changes"
 	s.Start()
 
@@ -216,10 +191,10 @@ func main() {
 	}
 
 	s.Stop()
-	status.Add(green.Sprintf("✔ Pulled latest changes from %s", defaultBranch))
+	fmt.Printf("✔ Pulled latest changes from %s\n", defaultBranch)
 
 	// Prune branches
-	s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
+	s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 	s.Suffix = " Pruning local branches"
 	s.Start()
 
@@ -230,7 +205,7 @@ func main() {
 	}
 
 	s.Stop()
-	status.Add(green.Sprintf("✔ Pruned local branches"))
+	fmt.Println("✔ Pruned local branches")
 
 	// Get deleted branches
 	deletedBranches, deletedWorktreeBranches, err := getDeletedBranches()
@@ -241,7 +216,7 @@ func main() {
 
 	// Delete regular branches
 	for _, branch := range deletedBranches {
-		s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
+		s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 		s.Suffix = fmt.Sprintf(" Deleting branch: %s", branch)
 		s.Start()
 
@@ -252,7 +227,7 @@ func main() {
 		}
 
 		s.Stop()
-		status.Add(green.Sprintf("✔ Deleted branch: %s", branch))
+		fmt.Printf("✔ Deleted branch: %s\n", branch)
 	}
 
 	// Delete worktree branches
@@ -267,7 +242,7 @@ func main() {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
+		s = spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 		s.Suffix = fmt.Sprintf(" Deleting worktree: %s", relativePath)
 		s.Start()
 
@@ -284,10 +259,8 @@ func main() {
 		}
 
 		s.Stop()
-		status.Add(green.Sprintf("✔ Deleted worktree: %s", relativePath))
+		fmt.Printf("✔ Deleted worktree: %s\n", relativePath)
 	}
 
-	// Print final status
-	status.Print()
 	green.Println("\n✨ Git cleanup completed successfully!")
 }
