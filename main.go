@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -97,7 +98,7 @@ func getDeletedBranches() ([]string, []string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "origin/.*: gone]") {
+		if regexp.MustCompile(`origin/.*: gone\]`).MatchString(line) {
 			if strings.HasPrefix(line, "+") {
 				// Worktree branch
 				parts := strings.Fields(line)
