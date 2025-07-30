@@ -26,14 +26,6 @@ func runWithSpinner(suffix string, operation func() error) error {
 	return err
 }
 
-func runCommand(cmd *exec.Cmd) error {
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("command failed: %s\nOutput: %s", err, string(output))
-	}
-	return nil
-}
-
 func getDefaultBranch() (string, error) {
 	methods := [][]string{
 		{"symbolic-ref", "refs/remotes/origin/HEAD"},
@@ -42,8 +34,7 @@ func getDefaultBranch() (string, error) {
 	}
 
 	for _, method := range methods {
-		cmd := exec.Command("git", method...)
-		output, err := cmd.Output()
+		output, err := git(exec.Command("git", method...))
 		if err == nil {
 			result := strings.TrimSpace(string(output))
 
@@ -62,32 +53,31 @@ func getDefaultBranch() (string, error) {
 }
 
 func getCurrentBranch() (string, error) {
-	cmd := exec.Command("git", "branch", "--show-current")
-	output, err := cmd.Output()
+	output, err := git(exec.Command("git", "branch", "--show-current"))
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
 	}
+
 	return strings.TrimSpace(string(output)), nil
 }
 
 func checkoutBranch(branch string) error {
-	cmd := exec.Command("git", "checkout", branch)
-	return runCommand(cmd)
+	_, err := git(exec.Command("git", "checkout", branch))
+	return err
 }
 
 func pullBranch(branch string) error {
-	cmd := exec.Command("git", "pull", "origin", branch)
-	return runCommand(cmd)
+	_, err := git(exec.Command("git", "pull", "origin", branch))
+	return err
 }
 
 func fetchPrune() error {
-	cmd := exec.Command("git", "fetch", "-p")
-	return runCommand(cmd)
+	_, err := git(exec.Command("git", "fetch", "-p"))
+	return err
 }
 
 func getDeletedBranches() ([]string, []string, error) {
-	cmd := exec.Command("git", "branch", "-vv")
-	output, err := cmd.Output()
+	output, err := git(exec.Command("git", "branch", "-vv"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get branch info: %w", err)
 	}
@@ -119,13 +109,12 @@ func getDeletedBranches() ([]string, []string, error) {
 }
 
 func deleteBranch(branch string) error {
-	cmd := exec.Command("git", "branch", "-D", branch)
-	return runCommand(cmd)
+	_, err := git(exec.Command("git", "branch", "-D", branch))
+	return err
 }
 
 func getWorktreePath(branch string) (string, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	output, err := cmd.Output()
+	output, err := git(exec.Command("git", "worktree", "list", "--porcelain"))
 	if err != nil {
 		return "", fmt.Errorf("failed to get worktree list: %w", err)
 	}
@@ -154,8 +143,8 @@ func getWorktreePath(branch string) (string, error) {
 }
 
 func removeWorktree(path string) error {
-	cmd := exec.Command("git", "worktree", "remove", path)
-	return runCommand(cmd)
+	_, err := git(exec.Command("git", "worktree", "remove", path))
+	return err
 }
 
 func main() {
