@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/fatih/color"
 )
 
-// git creates a git command with automatic cwd handling
 func git(args ...string) *exec.Cmd {
 	if cwd != "" {
 		args = append([]string{"-C", cwd}, args...)
 	}
+
 	return exec.Command("git", args...)
 }
 
@@ -69,19 +70,7 @@ func cleanup() error {
 		return fmt.Errorf("error getting deleted branches: %w", err)
 	}
 
-	// Delete regular branches
-	for _, branch := range deletedBranches {
-		if err := runWithSpinner(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
-			return deleteBranch(branch, outputChan)
-		}); err != nil {
-			red.Printf("Error deleting branch %s: %v\n", branch, err)
-			continue
-		}
-
-		fmt.Printf("✔ Deleted branch: %s\n", branch)
-	}
-
-	// Delete worktree branches
+	// Reset worktrees
 	for _, branch := range deletedWorktreeBranches {
 		worktreePath, err := getWorktreePath(branch)
 		if err != nil {
@@ -93,19 +82,26 @@ func cleanup() error {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		if err := runWithSpinner(fmt.Sprintf("Deleting worktree: %s", relativePath), func(outputChan chan<- string) error {
-			return removeWorktree(worktreePath, outputChan)
+		if err := runWithSpinner(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
+			return resetWorktree(worktreePath, outputChan)
 		}); err != nil {
-			red.Printf("Error removing worktree %s: %v\n", relativePath, err)
+			red.Printf("Error resetting worktree %s: %v\n", relativePath, err)
 			continue
 		}
 
-		if err := deleteBranch(branch, nil); err != nil {
+		fmt.Printf("✔ Reset worktree: %s\n", relativePath)
+	}
+
+	// Delete branches
+	for _, branch := range deletedBranches {
+		if err := runWithSpinner(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
+			return deleteBranch(branch, outputChan)
+		}); err != nil {
 			red.Printf("Error deleting branch %s: %v\n", branch, err)
 			continue
 		}
 
-		fmt.Printf("✔ Deleted worktree: %s\n", relativePath)
+		fmt.Printf("✔ Deleted branch: %s\n", branch)
 	}
 
 	green.Println("✔ Git cleanup completed")
@@ -175,17 +171,15 @@ func getDeletedBranches() ([]string, []string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := scanner.Text()
+
 		if regexp.MustCompile(`origin/.*: gone\]`).MatchString(line) {
-			if strings.HasPrefix(line, "+") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					worktreeBranches = append(worktreeBranches, parts[1])
-				}
-			} else {
-				parts := strings.Fields(line)
-				if len(parts) > 0 {
-					branches = append(branches, parts[0])
-				}
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				branches = append(branches, parts[0])
+			}
+
+			if strings.HasPrefix(line, "+") && len(parts) >= 2 {
+				worktreeBranches = append(worktreeBranches, parts[1])
 			}
 		}
 	}
@@ -228,7 +222,8 @@ func getWorktreePath(branch string) (string, error) {
 	return worktreePath, nil
 }
 
-func removeWorktree(path string, outputChan chan<- string) error {
-	cmd := git("worktree", "remove", path)
+func resetWorktree(path string, outputChan chan<- string) error {
+	worktreeBranch := strings.TrimPrefix(filepath.Base(path), "web-")
+	cmd := git("-C", path, "checkout", "-b", worktreeBranch)
 	return runCommand(cmd, outputChan)
 }
