@@ -1,47 +1,59 @@
-package main
+package streamer
 
 import (
 	"bufio"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/briandowns/spinner"
+	"github.com/fatih/color"
 )
 
 const charSet = 14
 
-type outputStreamer struct {
+type OutputStreamer struct {
 	spinner *spinner.Spinner
 	lines   []string
 }
 
-func newOutputStreamer(suffix string) *outputStreamer {
+func NewOutputStreamer(suffix string) *OutputStreamer {
 	s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
 	s.Suffix = " " + suffix
-	return &outputStreamer{
+	return &OutputStreamer{
 		spinner: s,
 		lines:   make([]string, 0),
 	}
 }
 
-func (o *outputStreamer) start() {
+func (o *OutputStreamer) start() {
 	o.spinner.Start()
 }
 
-func (o *outputStreamer) stop() {
+func (o *OutputStreamer) stop() {
 	o.spinner.Stop()
 	o.clearOutput()
 }
 
-func (o *outputStreamer) addOutput(line string) {
+func (o *OutputStreamer) pass() {
+	o.spinner.FinalMSG = "\u2714" + o.spinner.Suffix + "\n"
+	o.stop()
+}
+
+func (o *OutputStreamer) fail() {
+	o.spinner.FinalMSG = color.RedString("\u2716" + o.spinner.Suffix + "\n")
+	o.stop()
+}
+
+func (o *OutputStreamer) addOutput(line string) {
 	if len(line) > 0 {
 		o.lines = append(o.lines, line)
 		o.updateDisplay()
 	}
 }
 
-func (o *outputStreamer) clearOutput() {
+func (o *OutputStreamer) clearOutput() {
 	if len(o.lines) > 0 {
 		// Clear the output lines by moving cursor up and clearing lines
 		for i := 0; i < len(o.lines); i++ {
@@ -51,14 +63,16 @@ func (o *outputStreamer) clearOutput() {
 	}
 }
 
-func (o *outputStreamer) updateDisplay() {
+const maxDisplayLines = 2
+
+func (o *OutputStreamer) updateDisplay() {
 	// Clear previous output lines
 	o.clearOutput()
 
-	// Display current output lines (max 2 lines)
+	// Display current output lines
 	displayLines := o.lines
-	if len(displayLines) > 2 {
-		displayLines = displayLines[len(displayLines)-2:]
+	if len(displayLines) > maxDisplayLines {
+		displayLines = displayLines[len(displayLines)-maxDisplayLines:]
 	}
 
 	for _, line := range displayLines {
@@ -68,8 +82,8 @@ func (o *outputStreamer) updateDisplay() {
 	}
 }
 
-func runWithSpinner(suffix string, operation func(chan<- string) error) error {
-	streamer := newOutputStreamer(suffix)
+func RunWithSpinner(suffix string, operation func(chan<- string) error) {
+	streamer := NewOutputStreamer(suffix)
 	streamer.start()
 
 	// Create a channel to receive output from the operation
@@ -89,18 +103,31 @@ func runWithSpinner(suffix string, operation func(chan<- string) error) error {
 		case output, ok := <-outputChan:
 			if !ok {
 				// Channel closed, operation finished
-				streamer.stop()
-				return <-errChan
+				err := <-errChan
+				if err != nil {
+					streamer.fail()
+					fmt.Println(err)
+					return
+				}
+
+				streamer.pass()
+				return
 			}
+
 			streamer.addOutput(output)
 		case err := <-errChan:
-			streamer.stop()
-			return err
+			if err != nil {
+				streamer.fail()
+				fmt.Println(err)
+			}
+
+			streamer.pass()
+			return
 		}
 	}
 }
 
-func runCommandStreaming(cmd *exec.Cmd, outputChan chan<- string) error {
+func RunCommandStreaming(cmd *exec.Cmd, outputChan chan<- string) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -140,10 +167,10 @@ func runCommandStreaming(cmd *exec.Cmd, outputChan chan<- string) error {
 	return cmd.Wait()
 }
 
-func runCommand(cmd *exec.Cmd, outputChan chan<- string) error {
+func RunCommand(cmd *exec.Cmd, outputChan chan<- string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("command failed: %s\nOutput: %s", err, string(output))
+		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
 	}
 	return nil
 }
