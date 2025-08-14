@@ -21,6 +21,14 @@ func git(args ...string) *exec.Cmd {
 	return exec.Command("git", args...)
 }
 
+func runCommand(cmd *exec.Cmd, outputChan chan<- string) error {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
@@ -72,7 +80,7 @@ func cleanup() error {
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
 		streamer.Run(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
-			return resetWorktree(worktreePath, outputChan)
+			return resetWorktree(defaultBranch, worktreePath, outputChan)
 		})
 	}
 
@@ -124,17 +132,17 @@ func getCurrentBranch() (string, error) {
 
 func checkoutBranch(branch string, outputChan chan<- string) error {
 	cmd := git("checkout", branch)
-	return streamer.RunCommand(cmd, outputChan)
+	return runCommand(cmd, outputChan)
 }
 
 func pullBranch(branch string, outputChan chan<- string) error {
 	cmd := git("pull", "origin", branch)
-	return streamer.RunCommand(cmd, outputChan)
+	return runCommand(cmd, outputChan)
 }
 
 func fetchPrune(outputChan chan<- string) error {
 	cmd := git("fetch", "-p")
-	return streamer.RunCommand(cmd, outputChan)
+	return runCommand(cmd, outputChan)
 }
 
 func getDeletedBranches() ([]string, []string, error) {
@@ -168,7 +176,7 @@ func getDeletedBranches() ([]string, []string, error) {
 
 func deleteBranch(branch string, outputChan chan<- string) error {
 	cmd := git("branch", "-D", branch)
-	return streamer.RunCommand(cmd, outputChan)
+	return runCommand(cmd, outputChan)
 }
 
 func getWorktreePath(branch string) (string, error) {
@@ -201,8 +209,23 @@ func getWorktreePath(branch string) (string, error) {
 	return worktreePath, nil
 }
 
-func resetWorktree(path string, outputChan chan<- string) error {
+func resetWorktree(defaultBranch, path string, outputChan chan<- string) error {
 	worktreeBranch := strings.TrimPrefix(filepath.Base(path), "web-")
-	cmd := git("-C", path, "checkout", "-b", worktreeBranch)
-	return streamer.RunCommand(cmd, outputChan)
+
+	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
+	if err := runCommand(cmd, outputChan); err == nil {
+		// Rebase the branch onto the default branch
+		cmd = git("-C", path, "rebase", "origin/"+defaultBranch, worktreeBranch)
+		if err := runCommand(cmd, outputChan); err != nil {
+			return err
+		}
+
+		// Checkout the branch in the worktree
+		cmd = git("-C", path, "checkout", worktreeBranch)
+		return runCommand(cmd, outputChan)
+	}
+
+	// Branch doesn't exist, create and checkout in the worktree
+	cmd = git("-C", path, "checkout", "-b", worktreeBranch)
+	return runCommand(cmd, outputChan)
 }

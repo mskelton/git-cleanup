@@ -166,11 +166,3 @@ func RunCommandStreaming(cmd *exec.Cmd, outputChan chan<- string) error {
 
 	return cmd.Wait()
 }
-
-func RunCommand(cmd *exec.Cmd, outputChan chan<- string) error {
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
-	}
-	return nil
-}
