@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/fatih/color"
@@ -14,7 +15,7 @@ import (
 )
 
 func git(args ...string) *exec.Cmd {
-	if cwd != "" {
+	if cwd != "" && !slices.Contains(args, "-C") {
 		args = append([]string{"-C", cwd}, args...)
 	}
 
