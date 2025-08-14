@@ -18,9 +18,9 @@ type OutputStreamer struct {
 	lines   []string
 }
 
-func NewOutputStreamer(suffix string) *OutputStreamer {
+func NewOutputStreamer(title string) *OutputStreamer {
 	s := spinner.New(spinner.CharSets[charSet], 100*time.Millisecond)
-	s.Suffix = " " + suffix
+	s.Suffix = " " + title
 	return &OutputStreamer{
 		spinner: s,
 		lines:   make([]string, 0),
@@ -82,8 +82,19 @@ func (o *OutputStreamer) updateDisplay() {
 	}
 }
 
-func RunWithSpinner(suffix string, operation func(chan<- string) error) {
-	streamer := NewOutputStreamer(suffix)
+func handleCompletion(streamer *OutputStreamer, err error) {
+	if err != nil {
+		streamer.fail()
+		for _, line := range strings.Split(err.Error(), "\n") {
+			fmt.Println(color.BlackString("  " + line))
+		}
+	} else {
+		streamer.pass()
+	}
+}
+
+func Run(title string, operation func(chan<- string) error) {
+	streamer := NewOutputStreamer(title)
 	streamer.start()
 
 	// Create a channel to receive output from the operation
@@ -104,24 +115,13 @@ func RunWithSpinner(suffix string, operation func(chan<- string) error) {
 			if !ok {
 				// Channel closed, operation finished
 				err := <-errChan
-				if err != nil {
-					streamer.fail()
-					fmt.Println(err)
-					return
-				}
-
-				streamer.pass()
+				handleCompletion(streamer, err)
 				return
 			}
 
 			streamer.addOutput(output)
 		case err := <-errChan:
-			if err != nil {
-				streamer.fail()
-				fmt.Println(err)
-			}
-
-			streamer.pass()
+			handleCompletion(streamer, err)
 			return
 		}
 	}

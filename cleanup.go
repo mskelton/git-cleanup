@@ -38,18 +38,18 @@ func cleanup() error {
 	}
 
 	if currentBranch != defaultBranch {
-		streamer.RunWithSpinner("Checking out default branch", func(outputChan chan<- string) error {
+		streamer.Run("Checking out default branch", func(outputChan chan<- string) error {
 			return checkoutBranch(defaultBranch, outputChan)
 		})
 	}
 
 	// Pull latest changes
-	streamer.RunWithSpinner("Pulling latest changes", func(outputChan chan<- string) error {
+	streamer.Run("Pulling latest changes", func(outputChan chan<- string) error {
 		return pullBranch(defaultBranch, outputChan)
 	})
 
 	// Prune branches
-	streamer.RunWithSpinner("Pruning local branches", func(outputChan chan<- string) error {
+	streamer.Run("Pruning local branches", func(outputChan chan<- string) error {
 		return fetchPrune(outputChan)
 	})
 
@@ -71,14 +71,14 @@ func cleanup() error {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		streamer.RunWithSpinner(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
+		streamer.Run(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
 			return resetWorktree(worktreePath, outputChan)
 		})
 	}
 
 	// Delete branches
 	for _, branch := range deletedBranches {
-		streamer.RunWithSpinner(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
+		streamer.Run(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
 			return deleteBranch(branch, outputChan)
 		})
 	}
@@ -153,12 +153,12 @@ func getDeletedBranches() ([]string, []string, error) {
 
 		if regexp.MustCompile(`origin/.*: gone\]`).MatchString(line) {
 			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				branches = append(branches, parts[0])
-			}
 
 			if strings.HasPrefix(line, "+") && len(parts) >= 2 {
 				worktreeBranches = append(worktreeBranches, parts[1])
+				branches = append(branches, parts[1])
+			} else if len(parts) > 0 {
+				branches = append(branches, parts[0])
 			}
 		}
 	}
