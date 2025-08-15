@@ -14,7 +14,7 @@ import (
 	"github.com/mskelton/git-cleanup/pkg/streamer"
 )
 
-var repoPath string
+var gitDir string
 
 func git(args ...string) *exec.Cmd {
 	if !slices.Contains(args, "-C") {
@@ -28,7 +28,7 @@ func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
-	repoPath = getRepoPath()
+	gitDir = getGitDir()
 
 	// Get default branch
 	defaultBranch, err := getDefaultBranch()
@@ -92,7 +92,7 @@ func cleanup() error {
 	return nil
 }
 
-func getRepoPath() string {
+func getGitDir() string {
 	output, err := git("rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir").Output()
 	if err != nil {
 		return ""
@@ -140,7 +140,7 @@ func getDefaultBranch() (string, error) {
 }
 
 func getCurrentBranch() (string, error) {
-	cmd := git("-C", repoPath, "branch", "--show-current")
+	cmd := git("--git-dir", gitDir, "branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
@@ -149,18 +149,18 @@ func getCurrentBranch() (string, error) {
 }
 
 func checkoutBranch(branch string, outputChan chan<- string) error {
-	cmd := git("-C", repoPath, "checkout", branch)
-	return streamer.RunCommandStreaming(cmd, outputChan)
+	cmd := git("--git-dir", gitDir, "checkout", branch)
+	return streamer.RunCommand(cmd, outputChan)
 }
 
 func pullBranch(branch string, outputChan chan<- string) error {
-	cmd := git("-C", repoPath, "pull", "origin", branch)
-	return streamer.RunCommandStreaming(cmd, outputChan)
+	cmd := git("--git-dir", gitDir, "pull", "origin", branch)
+	return streamer.RunCommand(cmd, outputChan)
 }
 
 func fetchPrune(outputChan chan<- string) error {
-	cmd := git("-C", repoPath, "fetch", "-p")
-	return streamer.RunCommandStreaming(cmd, outputChan)
+	cmd := git("--git-dir", gitDir, "fetch", "-p")
+	return streamer.RunCommand(cmd, outputChan)
 }
 
 func getDeletedBranches() ([]string, []string, error) {
@@ -194,7 +194,7 @@ func getDeletedBranches() ([]string, []string, error) {
 
 func deleteBranch(branch string, outputChan chan<- string) error {
 	cmd := git("branch", "-D", branch)
-	return streamer.RunCommandStreaming(cmd, outputChan)
+	return streamer.RunCommand(cmd, outputChan)
 }
 
 func getWorktreePath(branch string) (string, error) {
@@ -231,19 +231,19 @@ func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string)
 	worktreeBranch := strings.TrimPrefix(filepath.Base(worktreePath), "web-")
 
 	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
-	if err := streamer.RunCommandStreaming(cmd, outputChan); err == nil {
+	if err := streamer.RunCommand(cmd, outputChan); err == nil {
 		// Rebase the branch onto the default branch
 		cmd = git("-C", worktreePath, "rebase", "origin/"+defaultBranch, worktreeBranch)
-		if err := streamer.RunCommandStreaming(cmd, outputChan); err != nil {
+		if err := streamer.RunCommand(cmd, outputChan); err != nil {
 			return err
 		}
 
 		// Checkout the branch in the worktree
 		cmd = git("-C", worktreePath, "checkout", worktreeBranch)
-		return streamer.RunCommandStreaming(cmd, outputChan)
+		return streamer.RunCommand(cmd, outputChan)
 	}
 
 	// Branch doesn't exist, create and checkout in the worktree
 	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch)
-	return streamer.RunCommandStreaming(cmd, outputChan)
+	return streamer.RunCommand(cmd, outputChan)
 }

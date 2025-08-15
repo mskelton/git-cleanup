@@ -11,7 +11,10 @@ import (
 	"github.com/fatih/color"
 )
 
-const charSet = 14
+const (
+	charSet         = 14
+	maxDisplayLines = 2
+)
 
 type OutputStreamer struct {
 	spinner *spinner.Spinner
@@ -62,8 +65,6 @@ func (o *OutputStreamer) clearOutput() {
 		o.lines = make([]string, 0)
 	}
 }
-
-const maxDisplayLines = 2
 
 func (o *OutputStreamer) updateDisplay() {
 	// Clear previous output lines
