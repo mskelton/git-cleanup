@@ -7,20 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/mskelton/git-cleanup/pkg/streamer"
 )
-
-func git(args ...string) *exec.Cmd {
-	if cwd != "" && !slices.Contains(args, "-C") {
-		args = append([]string{"-C", cwd}, args...)
-	}
-
-	return exec.Command("git", args...)
-}
 
 func runCommand(cmd *exec.Cmd, outputChan chan<- string) error {
 	output, err := cmd.CombinedOutput()
@@ -34,6 +25,8 @@ func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
+	commonDir := getCommonDir()
+
 	// Get default branch
 	defaultBranch, err := getDefaultBranch()
 	if err != nil {
@@ -41,25 +34,25 @@ func cleanup() error {
 	}
 
 	// Check if we need to checkout default branch
-	currentBranch, err := getCurrentBranch()
+	currentBranch, err := getCurrentBranch(commonDir)
 	if err != nil {
 		return fmt.Errorf("failed to get current branch: %w", err)
 	}
 
 	if currentBranch != defaultBranch {
 		streamer.Run("Checking out default branch", func(outputChan chan<- string) error {
-			return checkoutBranch(defaultBranch, outputChan)
+			return checkoutBranch(commonDir, defaultBranch, outputChan)
 		})
 	}
 
 	// Pull latest changes
 	streamer.Run("Pulling latest changes", func(outputChan chan<- string) error {
-		return pullBranch(defaultBranch, outputChan)
+		return pullBranch(commonDir, defaultBranch, outputChan)
 	})
 
 	// Prune branches
 	streamer.Run("Pruning local branches", func(outputChan chan<- string) error {
-		return fetchPrune(outputChan)
+		return fetchPrune(commonDir, outputChan)
 	})
 
 	// Get deleted branches
@@ -96,6 +89,16 @@ func cleanup() error {
 	return nil
 }
 
+func getCommonDir() string {
+	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(string(output))
+}
+
 func getDefaultBranch() (string, error) {
 	methods := [][]string{
 		{"symbolic-ref", "refs/remotes/origin/HEAD"},
@@ -104,7 +107,7 @@ func getDefaultBranch() (string, error) {
 	}
 
 	for _, method := range methods {
-		cmd := git(method...)
+		cmd := exec.Command("git", append([]string{"-C", cwd}, method...)...)
 		output, err := cmd.Output()
 		if err == nil {
 			result := strings.TrimSpace(string(output))
@@ -122,8 +125,8 @@ func getDefaultBranch() (string, error) {
 	return "", fmt.Errorf("failed to get default branch")
 }
 
-func getCurrentBranch() (string, error) {
-	cmd := git("branch", "--show-current")
+func getCurrentBranch(cwd string) (string, error) {
+	cmd := exec.Command("git", "-C", cwd, "branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
@@ -131,23 +134,23 @@ func getCurrentBranch() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func checkoutBranch(branch string, outputChan chan<- string) error {
-	cmd := git("checkout", branch)
+func checkoutBranch(cwd, branch string, outputChan chan<- string) error {
+	cmd := exec.Command("git", "-C", cwd, "checkout", branch)
 	return runCommand(cmd, outputChan)
 }
 
-func pullBranch(branch string, outputChan chan<- string) error {
-	cmd := git("pull", "origin", branch)
+func pullBranch(cwd, branch string, outputChan chan<- string) error {
+	cmd := exec.Command("git", "-C", cwd, "pull", "origin", branch)
 	return runCommand(cmd, outputChan)
 }
 
-func fetchPrune(outputChan chan<- string) error {
-	cmd := git("fetch", "-p")
+func fetchPrune(cwd string, outputChan chan<- string) error {
+	cmd := exec.Command("git", "-C", cwd, "fetch", "-p")
 	return runCommand(cmd, outputChan)
 }
 
 func getDeletedBranches() ([]string, []string, error) {
-	cmd := git("branch", "-vv")
+	cmd := exec.Command("git", "-C", cwd, "branch", "-vv")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get branch info: %w", err)
@@ -176,12 +179,12 @@ func getDeletedBranches() ([]string, []string, error) {
 }
 
 func deleteBranch(branch string, outputChan chan<- string) error {
-	cmd := git("branch", "-D", branch)
+	cmd := exec.Command("git", "-C", cwd, "branch", "-D", branch)
 	return runCommand(cmd, outputChan)
 }
 
 func getWorktreePath(branch string) (string, error) {
-	cmd := git("worktree", "list", "--porcelain")
+	cmd := exec.Command("git", "-C", cwd, "worktree", "list", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get worktree list: %w", err)
@@ -213,20 +216,20 @@ func getWorktreePath(branch string) (string, error) {
 func resetWorktree(defaultBranch, path string, outputChan chan<- string) error {
 	worktreeBranch := strings.TrimPrefix(filepath.Base(path), "web-")
 
-	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
+	cmd := exec.Command("git", "-C", cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
 	if err := runCommand(cmd, outputChan); err == nil {
 		// Rebase the branch onto the default branch
-		cmd = git("-C", path, "rebase", "origin/"+defaultBranch, worktreeBranch)
+		cmd = exec.Command("git", "-C", path, "rebase", "origin/"+defaultBranch, worktreeBranch)
 		if err := runCommand(cmd, outputChan); err != nil {
 			return err
 		}
 
 		// Checkout the branch in the worktree
-		cmd = git("-C", path, "checkout", worktreeBranch)
+		cmd = exec.Command("git", "-C", path, "checkout", worktreeBranch)
 		return runCommand(cmd, outputChan)
 	}
 
 	// Branch doesn't exist, create and checkout in the worktree
-	cmd = git("-C", path, "checkout", "-b", worktreeBranch)
+	cmd = exec.Command("git", "-C", path, "checkout", "-b", worktreeBranch)
 	return runCommand(cmd, outputChan)
 }
