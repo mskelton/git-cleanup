@@ -59,13 +59,13 @@ func cleanup() error {
 	})
 
 	// Get deleted branches
-	deletedBranches, deletedWorktreeBranches, err := getDeletedBranches()
+	branches, err := getBranches()
 	if err != nil {
 		return fmt.Errorf("error getting deleted branches: %w", err)
 	}
 
 	// Reset worktrees
-	for _, branch := range deletedWorktreeBranches {
+	for _, branch := range branches.WorktreeBranches {
 		worktreePath, err := getWorktreePath(branch)
 		if err != nil {
 			red.Printf("Error finding worktree for branch %s: %v\n", branch, err)
@@ -82,9 +82,28 @@ func cleanup() error {
 	}
 
 	// Delete branches
-	for _, branch := range deletedBranches {
+	for _, branch := range branches.DeletedBranches {
 		streamer.Run(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
 			return deleteBranch(branch, outputChan)
+		})
+	}
+
+	// Rebase worktree pool
+	if len(branches.WorktreePoolBranches) > 0 {
+		streamer.Run("Rebasing worktree pool", func(outputChan chan<- string) error {
+			for _, branch := range branches.WorktreePoolBranches {
+				worktreePath, err := getWorktreePath(branch)
+				if err != nil {
+					return err
+				}
+
+				err = rebaseWorktree(worktreePath, branch, defaultBranch, outputChan)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
 		})
 	}
 
@@ -163,15 +182,22 @@ func fetchPrune(outputChan chan<- string) error {
 	return streamer.RunCommand(cmd, outputChan)
 }
 
-func getDeletedBranches() ([]string, []string, error) {
+func getBranches() (struct {
+	DeletedBranches      []string
+	WorktreeBranches     []string
+	WorktreePoolBranches []string
+}, error) {
+	var result struct {
+		DeletedBranches      []string
+		WorktreeBranches     []string
+		WorktreePoolBranches []string
+	}
+
 	cmd := git("branch", "-vv")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get branch info: %w", err)
+		return result, fmt.Errorf("failed to get branch info: %w", err)
 	}
-
-	var branches []string
-	var worktreeBranches []string
 
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
@@ -181,15 +207,23 @@ func getDeletedBranches() ([]string, []string, error) {
 			parts := strings.Fields(line)
 
 			if strings.HasPrefix(line, "+") && len(parts) >= 2 {
-				worktreeBranches = append(worktreeBranches, parts[1])
-				branches = append(branches, parts[1])
+				result.WorktreeBranches = append(result.WorktreeBranches, parts[1])
+				result.DeletedBranches = append(result.DeletedBranches, parts[1])
 			} else if len(parts) > 0 {
-				branches = append(branches, parts[0])
+				result.DeletedBranches = append(result.DeletedBranches, parts[0])
+			}
+		} else if strings.HasPrefix(line, "+") {
+			parts := strings.Fields(line)
+			branch := parts[1]
+			path := parts[3][1 : len(parts[3])-1]
+
+			if strings.TrimPrefix(filepath.Base(path), "web-") == branch {
+				result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch)
 			}
 		}
 	}
 
-	return branches, worktreeBranches, nil
+	return result, nil
 }
 
 func deleteBranch(branch string, outputChan chan<- string) error {
@@ -233,8 +267,7 @@ func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string)
 	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
 	if err := streamer.RunCommand(cmd, outputChan); err == nil {
 		// Rebase the branch onto the default branch
-		cmd = git("-C", worktreePath, "rebase", "origin/"+defaultBranch, worktreeBranch)
-		if err := streamer.RunCommand(cmd, outputChan); err != nil {
+		if err := rebaseWorktree(worktreePath, worktreeBranch, defaultBranch, outputChan); err != nil {
 			return err
 		}
 
@@ -245,5 +278,10 @@ func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string)
 
 	// Branch doesn't exist, create and checkout in the worktree
 	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch)
+	return streamer.RunCommand(cmd, outputChan)
+}
+
+func rebaseWorktree(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
+	cmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
