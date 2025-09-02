@@ -97,7 +97,7 @@ func cleanup() error {
 					return err
 				}
 
-				err = rebaseWorktree(worktreePath, branch, defaultBranch, outputChan)
+				err = rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch, outputChan)
 				if err != nil {
 					return err
 				}
@@ -284,4 +284,63 @@ func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string)
 func rebaseWorktree(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
 	cmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
 	return streamer.RunCommand(cmd, outputChan)
+}
+
+func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
+	// Check if worktree is dirty
+	cmd := git("-C", worktreePath, "status", "--porcelain")
+	output, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+
+	isDirty := len(strings.TrimSpace(string(output))) > 0
+	var stashRef string
+
+	if isDirty {
+		outputChan <- "Worktree is dirty, stashing changes..."
+
+		// Stash changes
+		stashCmd := git("-C", worktreePath, "stash", "push", "-m", fmt.Sprintf("Auto-stash before rebase %s onto %s", branch, defaultBranch))
+		stashOutput, err := stashCmd.Output()
+		if err != nil {
+			return err
+		}
+
+		// Extract stash reference from output (e.g., "stash@{0}")
+		lines := strings.Split(string(stashOutput), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "stash@{") {
+				stashRef = strings.TrimSpace(line)
+				break
+			}
+		}
+		outputChan <- fmt.Sprintf("Stashed changes: %s", stashRef)
+	}
+
+	// Perform rebase
+	outputChan <- fmt.Sprintf("Rebasing %s onto %s...", branch, defaultBranch)
+	rebaseCmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
+	if err := streamer.RunCommand(rebaseCmd, outputChan); err != nil {
+		// If rebase fails and we stashed changes, try to restore them
+		if isDirty && stashRef != "" {
+			outputChan <- "Rebase failed, restoring stashed changes..."
+			unstashCmd := git("-C", worktreePath, "stash", "pop", stashRef)
+			if unstashErr := streamer.RunCommand(unstashCmd, outputChan); unstashErr != nil {
+				outputChan <- fmt.Sprintf("Warning: failed to restore stashed changes: %v", unstashErr)
+			}
+		}
+		return err
+	}
+
+	// If rebase succeeded and we stashed changes, restore them
+	if isDirty && stashRef != "" {
+		outputChan <- "Rebase successful, restoring stashed changes..."
+		unstashCmd := git("-C", worktreePath, "stash", "pop", stashRef)
+		if err := streamer.RunCommand(unstashCmd, outputChan); err != nil {
+			outputChan <- fmt.Sprintf("Warning: failed to restore stashed changes: %v", err)
+		}
+	}
+
+	return nil
 }

@@ -112,7 +112,7 @@ func Run(title string, operation func(chan<- string) error) {
 	// Stream output as it comes in
 	for {
 		select {
-		case output, ok := <-outputChan:
+		case _, ok := <-outputChan:
 			if !ok {
 				// Channel closed, operation finished
 				err := <-errChan
@@ -120,7 +120,7 @@ func Run(title string, operation func(chan<- string) error) {
 				return
 			}
 
-			streamer.addOutput(output)
+			// streamer.addOutput(output)
 		case err := <-errChan:
 			handleCompletion(streamer, err)
 			return
