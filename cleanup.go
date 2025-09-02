@@ -295,27 +295,18 @@ func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, output
 	}
 
 	isDirty := len(strings.TrimSpace(string(output))) > 0
-	var stashRef string
 
 	if isDirty {
 		outputChan <- "Worktree is dirty, stashing changes..."
 
 		// Stash changes
 		stashCmd := git("-C", worktreePath, "stash", "push", "-m", fmt.Sprintf("Auto-stash before rebase %s onto %s", branch, defaultBranch))
-		stashOutput, err := stashCmd.Output()
+		err := streamer.RunCommand(stashCmd, outputChan)
 		if err != nil {
 			return err
 		}
 
-		// Extract stash reference from output (e.g., "stash@{0}")
-		lines := strings.Split(string(stashOutput), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "stash@{") {
-				stashRef = strings.TrimSpace(line)
-				break
-			}
-		}
-		outputChan <- fmt.Sprintf("Stashed changes: %s", stashRef)
+		outputChan <- "Stashed changes"
 	}
 
 	// Perform rebase
@@ -323,20 +314,21 @@ func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, output
 	rebaseCmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
 	if err := streamer.RunCommand(rebaseCmd, outputChan); err != nil {
 		// If rebase fails and we stashed changes, try to restore them
-		if isDirty && stashRef != "" {
+		if isDirty {
 			outputChan <- "Rebase failed, restoring stashed changes..."
-			unstashCmd := git("-C", worktreePath, "stash", "pop", stashRef)
+			unstashCmd := git("-C", worktreePath, "stash", "pop")
 			if unstashErr := streamer.RunCommand(unstashCmd, outputChan); unstashErr != nil {
 				outputChan <- fmt.Sprintf("Warning: failed to restore stashed changes: %v", unstashErr)
 			}
 		}
+
 		return err
 	}
 
 	// If rebase succeeded and we stashed changes, restore them
-	if isDirty && stashRef != "" {
+	if isDirty {
 		outputChan <- "Rebase successful, restoring stashed changes..."
-		unstashCmd := git("-C", worktreePath, "stash", "pop", stashRef)
+		unstashCmd := git("-C", worktreePath, "stash", "pop")
 		if err := streamer.RunCommand(unstashCmd, outputChan); err != nil {
 			outputChan <- fmt.Sprintf("Warning: failed to restore stashed changes: %v", err)
 		}
