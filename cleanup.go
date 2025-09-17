@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -14,11 +15,11 @@ import (
 	"github.com/mskelton/git-cleanup/pkg/streamer"
 )
 
-var gitDir string
+var rootDir string
 
 func git(args ...string) *exec.Cmd {
 	if !slices.Contains(args, "-C") {
-		args = append([]string{"-C", cwd}, args...)
+		args = append([]string{"-C", rootDir}, args...)
 	}
 
 	return exec.Command("git", args...)
@@ -28,7 +29,7 @@ func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
-	gitDir = getGitDir()
+	rootDir = getRootDir()
 
 	// Get default branch
 	defaultBranch, err := getDefaultBranch()
@@ -111,8 +112,13 @@ func cleanup() error {
 	return nil
 }
 
-func getGitDir() string {
-	output, err := git("rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir").Output()
+func getRootDir() string {
+	args := []string{"rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir"}
+	if cwd != "" {
+		args = append([]string{"-C", cwd}, args...)
+	}
+
+	output, err := git(args...).Output()
 	if err != nil {
 		return ""
 	}
@@ -124,12 +130,12 @@ func getGitDir() string {
 
 	// If the common dir and the git dir are the same, we are in the main repo
 	if dirs[0] == dirs[1] {
-		return dirs[2]
+		return path.Dir(dirs[2])
 	}
 
 	// If the common dir and the git dir are different, we are in a worktree, use
 	// the common dir
-	return dirs[0]
+	return path.Dir(dirs[0])
 }
 
 func getDefaultBranch() (string, error) {
@@ -159,7 +165,7 @@ func getDefaultBranch() (string, error) {
 }
 
 func getCurrentBranch() (string, error) {
-	cmd := git("--git-dir", gitDir, "branch", "--show-current")
+	cmd := git("branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
@@ -168,17 +174,17 @@ func getCurrentBranch() (string, error) {
 }
 
 func checkoutBranch(branch string, outputChan chan<- string) error {
-	cmd := git("--git-dir", gitDir, "checkout", branch)
+	cmd := git("checkout", branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
 func pullBranch(branch string, outputChan chan<- string) error {
-	cmd := git("--git-dir", gitDir, "pull", "origin", branch)
+	cmd := git("pull", "origin", branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
 func fetchPrune(outputChan chan<- string) error {
-	cmd := git("--git-dir", gitDir, "fetch", "-p")
+	cmd := git("fetch", "-p")
 	return streamer.RunCommand(cmd, outputChan)
 }
 
@@ -277,7 +283,7 @@ func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string)
 	}
 
 	// Branch doesn't exist, create and checkout in the worktree
-	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch)
+	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch, defaultBranch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
@@ -298,11 +304,8 @@ func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, output
 
 	if isDirty {
 		outputChan <- "Worktree is dirty, stashing changes..."
-
-		// Stash changes
 		stashCmd := git("-C", worktreePath, "stash", "push", "-m", fmt.Sprintf("Auto-stash before rebase %s onto %s", branch, defaultBranch))
-		err := streamer.RunCommand(stashCmd, outputChan)
-		if err != nil {
+		if err := streamer.RunCommand(stashCmd, outputChan); err != nil {
 			return err
 		}
 
