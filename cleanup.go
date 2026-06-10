@@ -223,7 +223,7 @@ func getBranches() (struct {
 			branch := parts[1]
 			path := parts[3][1 : len(parts[3])-1]
 
-			if strings.TrimPrefix(filepath.Base(path), "web-") == branch {
+			if worktreeBranch(path) == branch {
 				result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch)
 			}
 		}
@@ -235,6 +235,13 @@ func getBranches() (struct {
 func deleteBranch(branch string, outputChan chan<- string) error {
 	cmd := git("branch", "-D", branch)
 	return streamer.RunCommand(cmd, outputChan)
+}
+
+// worktreeBranch derives the branch name for a worktree by stripping the main
+// repo directory name prefix (worktree dirs are named "<repo>-<branch>").
+func worktreeBranch(worktreePath string) string {
+	prefix := filepath.Base(rootDir) + "-"
+	return strings.TrimPrefix(filepath.Base(worktreePath), prefix)
 }
 
 func getWorktreePath(branch string) (string, error) {
@@ -268,7 +275,7 @@ func getWorktreePath(branch string) (string, error) {
 }
 
 func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string) error {
-	worktreeBranch := strings.TrimPrefix(filepath.Base(worktreePath), "web-")
+	worktreeBranch := worktreeBranch(worktreePath)
 
 	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
 	if err := streamer.RunCommand(cmd, outputChan); err == nil {
