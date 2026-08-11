@@ -54,9 +54,9 @@ func cleanup() error {
 		return pullBranch(defaultBranch, outputChan)
 	})
 
-	// Prune branches
-	streamer.Run("Pruning local branches", func(outputChan chan<- string) error {
-		return fetchPrune(outputChan)
+	// Drop stale remote-tracking refs so gone locals show up later
+	streamer.Run("Pruning stale remotes", func(outputChan chan<- string) error {
+		return pruneRemote(outputChan)
 	})
 
 	// Get deleted branches
@@ -183,8 +183,8 @@ func pullBranch(branch string, outputChan chan<- string) error {
 	return streamer.RunCommand(cmd, outputChan)
 }
 
-func fetchPrune(outputChan chan<- string) error {
-	cmd := git("fetch", "-p")
+func pruneRemote(outputChan chan<- string) error {
+	cmd := git("remote", "prune", "origin")
 	return streamer.RunCommand(cmd, outputChan)
 }
 
