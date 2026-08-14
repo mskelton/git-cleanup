@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,7 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/mskelton/git-cleanup/pkg/streamer"
@@ -179,13 +183,190 @@ func checkoutBranch(branch string, outputChan chan<- string) error {
 }
 
 func pullBranch(branch string, outputChan chan<- string) error {
-	cmd := git("pull", "origin", branch)
+	cmd := git("pull", "--progress", "origin", branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
 func pruneRemote(outputChan chan<- string) error {
-	cmd := git("remote", "prune", "origin")
-	return streamer.RunCommand(cmd, outputChan)
+	const remote = "origin"
+
+	local, err := listRemoteTracking(remote)
+	if err != nil {
+		return err
+	}
+	outputChan <- fmt.Sprintf("Found %d local remotes", len(local))
+
+	target := remoteDisplayName(remote)
+	outputChan <- fmt.Sprintf("Waiting for %s…", target)
+
+	remoteHeads, err := listRemoteHeadsWithProgress(remote, target, outputChan)
+	if err != nil {
+		return err
+	}
+	outputChan <- fmt.Sprintf("Found %d branches on %s", len(remoteHeads), remote)
+
+	stale := staleRemoteTracking(local, remoteHeads, remote)
+	if len(stale) == 0 {
+		outputChan <- "No stale remotes to prune"
+		return nil
+	}
+
+	outputChan <- fmt.Sprintf("Removing %d stale remotes", len(stale))
+	for _, ref := range stale {
+		outputChan <- "Pruning " + strings.TrimPrefix(ref, "refs/remotes/")
+		cmd := git("update-ref", "-d", ref)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			msg := strings.TrimSpace(string(output))
+			if msg == "" {
+				return fmt.Errorf("failed to prune %s: %w", ref, err)
+			}
+			return fmt.Errorf("%s", msg)
+		}
+	}
+
+	return nil
+}
+
+type remoteHeadsResult struct {
+	heads map[string]struct{}
+	err   error
+}
+
+func listRemoteHeadsWithProgress(remote, target string, outputChan chan<- string) (map[string]struct{}, error) {
+	var mu sync.Mutex
+	received := 0
+	done := make(chan remoteHeadsResult, 1)
+
+	go func() {
+		heads, err := listRemoteHeads(remote, func(count int) {
+			mu.Lock()
+			received = count
+			mu.Unlock()
+		})
+		done <- remoteHeadsResult{heads, err}
+	}()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	started := time.Now()
+
+	for {
+		select {
+		case result := <-done:
+			return result.heads, result.err
+		case <-ticker.C:
+			mu.Lock()
+			count := received
+			mu.Unlock()
+			elapsed := formatElapsed(time.Since(started))
+			if count > 0 {
+				outputChan <- fmt.Sprintf("Received %d branches from %s… %s", count, target, elapsed)
+			} else {
+				outputChan <- fmt.Sprintf("Waiting for %s… %s", target, elapsed)
+			}
+		}
+	}
+}
+
+func listRemoteHeads(remote string, onCount func(int)) (map[string]struct{}, error) {
+	cmd := git("ls-remote", "--heads", remote)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	heads := make(map[string]struct{})
+	prefix := "refs/remotes/" + remote + "/"
+	count := 0
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) < 2 || !strings.HasPrefix(parts[1], "refs/heads/") {
+			continue
+		}
+		heads[prefix+strings.TrimPrefix(parts[1], "refs/heads/")] = struct{}{}
+		count++
+		if onCount != nil {
+			onCount(count)
+		}
+	}
+
+	waitErr := cmd.Wait()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if waitErr != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return nil, fmt.Errorf("failed to list remote branches: %w", waitErr)
+	}
+
+	return heads, nil
+}
+
+func remoteDisplayName(remote string) string {
+	output, err := git("remote", "get-url", remote).Output()
+	if err != nil {
+		return remote
+	}
+	return shortenRemoteURL(strings.TrimSpace(string(output)))
+}
+
+func shortenRemoteURL(raw string) string {
+	raw = strings.TrimSuffix(raw, ".git")
+	for _, prefix := range []string{"https://", "http://", "ssh://"} {
+		raw = strings.TrimPrefix(raw, prefix)
+	}
+	return strings.TrimPrefix(raw, "git@")
+}
+
+func formatElapsed(d time.Duration) string {
+	secs := int(d.Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
+}
+
+func listRemoteTracking(remote string) ([]string, error) {
+	cmd := git("for-each-ref", "--format=%(refname)", "refs/remotes/"+remote)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote-tracking branches: %w", err)
+	}
+
+	var refs []string
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		if ref := strings.TrimSpace(scanner.Text()); ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+
+	return refs, scanner.Err()
+}
+
+func staleRemoteTracking(local []string, remoteHeads map[string]struct{}, remote string) []string {
+	headRef := "refs/remotes/" + remote + "/HEAD"
+	var stale []string
+	for _, ref := range local {
+		if ref == headRef {
+			continue
+		}
+		if _, ok := remoteHeads[ref]; !ok {
+			stale = append(stale, ref)
+		}
+	}
+	sort.Strings(stale)
+	return stale
 }
 
 func getBranches() (struct {
