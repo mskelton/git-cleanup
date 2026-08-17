@@ -213,9 +213,9 @@ detect_arch() {
 	arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
 
 	case "${arch}" in
-	amd64) arch="amd64" ;;
+	x86_64 | amd64) arch="amd64" ;;
 	armv*) arch="arm" ;;
-	arm64) arch="arm64" ;;
+	aarch64 | arm64) arch="arm64" ;;
 	esac
 
 	# `uname -m` in some cases mis-reports 32-bit OS as 64-bit, so double check
@@ -409,7 +409,7 @@ fi
 printf '\n'
 
 EXT=tar.gz
-if [ "${PLATFORM}" = "pc-windows-msvc" ]; then
+if [ "${PLATFORM}" = "windows" ]; then
 	EXT=zip
 fi
 

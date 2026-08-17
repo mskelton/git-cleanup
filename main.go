@@ -16,12 +16,14 @@ func main() {
 		Use:   "git-cleanup",
 		Short: "Clean up your git repositories",
 		Long: `Git Cleanup is a tool that helps maintain clean git repositories by:
-- Pulling latest changes from the default branch
-- Pruning local branches that have been removed on remote
-- Deleting local branches that no longer exist on remote
-- Removing worktrees for deleted branches
-- Auto-retrying git operations that fail due to ref locking issues`,
-		Version: "1.0.0",
+- Checking out and pulling the default branch
+- Pruning stale remote-tracking refs
+- Deleting local branches whose upstream is gone
+- Resetting worktrees for deleted branches back to a pool branch
+- Rebasing worktree-pool branches (<repo>-<branch> directories) onto the default branch`,
+		Version:       "1.0.0",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cleanup()
 		},
@@ -30,7 +32,9 @@ func main() {
 	rootCmd.Flags().StringVar(&cwd, "cwd", "", "Run commands in this directory")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if !isDisplayedError(err) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

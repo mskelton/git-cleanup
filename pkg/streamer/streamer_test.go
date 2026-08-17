@@ -1,12 +1,22 @@
 package streamer
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 )
+
+func TestRunReturnsError(t *testing.T) {
+	err := Run("Boom", func(chan<- string) error {
+		return errors.New("nope")
+	})
+	if err == nil || err.Error() != "nope" {
+		t.Fatalf("got %v", err)
+	}
+}
 
 func TestAppendRollingKeepsLastLines(t *testing.T) {
 	var lines []string

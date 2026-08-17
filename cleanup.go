@@ -3,12 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -20,6 +19,23 @@ import (
 )
 
 var rootDir string
+
+// displayedError is an operation failure already shown by the streamer UI.
+type displayedError struct{ error }
+
+func (e displayedError) Unwrap() error { return e.error }
+
+func isDisplayedError(err error) bool {
+	var displayed displayedError
+	return errors.As(err, &displayed)
+}
+
+func runStep(title string, operation func(chan<- string) error) error {
+	if err := streamer.Run(title, operation); err != nil {
+		return displayedError{err}
+	}
+	return nil
+}
 
 func git(args ...string) *exec.Cmd {
 	if !slices.Contains(args, "-C") {
@@ -33,7 +49,11 @@ func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
-	rootDir = getRootDir()
+	var err error
+	rootDir, err = getRootDir()
+	if err != nil {
+		return err
+	}
 
 	// Get default branch
 	defaultBranch, err := getDefaultBranch()
@@ -47,21 +67,24 @@ func cleanup() error {
 		return fmt.Errorf("failed to get current branch: %w", err)
 	}
 
-	if currentBranch != defaultBranch {
-		streamer.Run("Checking out default branch", func(outputChan chan<- string) error {
+	if err := syncDefaultBranch(currentBranch, defaultBranch, func() error {
+		return runStep("Checking out default branch", func(outputChan chan<- string) error {
 			return checkoutBranch(defaultBranch, outputChan)
 		})
+	}, func() error {
+		return runStep("Pulling latest changes", func(outputChan chan<- string) error {
+			return pullBranch(defaultBranch, outputChan)
+		})
+	}); err != nil {
+		return err
 	}
 
-	// Pull latest changes
-	streamer.Run("Pulling latest changes", func(outputChan chan<- string) error {
-		return pullBranch(defaultBranch, outputChan)
-	})
-
 	// Drop stale remote-tracking refs so gone locals show up later
-	streamer.Run("Pruning stale remotes", func(outputChan chan<- string) error {
+	if err := runStep("Pruning stale remotes", func(outputChan chan<- string) error {
 		return pruneRemote(outputChan)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Get deleted branches
 	branches, err := getBranches()
@@ -71,7 +94,7 @@ func cleanup() error {
 
 	// Reset worktrees
 	for _, branch := range branches.WorktreeBranches {
-		worktreePath, err := getWorktreePath(branch)
+		worktreePath, err := worktreePathFor(branches.WorktreePaths, branch)
 		if err != nil {
 			red.Printf("Error finding worktree for branch %s: %v\n", branch, err)
 			continue
@@ -81,23 +104,27 @@ func cleanup() error {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		streamer.Run(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
+		if err := runStep(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
 			return resetWorktree(defaultBranch, worktreePath, outputChan)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Delete branches
 	for _, branch := range branches.DeletedBranches {
-		streamer.Run(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
+		if err := runStep(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
 			return deleteBranch(branch, outputChan)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Rebase worktree pool
 	if len(branches.WorktreePoolBranches) > 0 {
-		streamer.Run("Rebasing worktree pool", func(outputChan chan<- string) error {
+		if err := runStep("Rebasing worktree pool", func(outputChan chan<- string) error {
 			for _, branch := range branches.WorktreePoolBranches {
-				worktreePath, err := getWorktreePath(branch)
+				worktreePath, err := worktreePathFor(branches.WorktreePaths, branch)
 				if err != nil {
 					return err
 				}
@@ -109,37 +136,81 @@ func cleanup() error {
 			}
 
 			return nil
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	green.Println("✔ Git cleanup completed")
 	return nil
 }
 
-func getRootDir() string {
+func getRootDir() (string, error) {
+	if cwd != "" {
+		info, err := os.Stat(cwd)
+		if err != nil {
+			return "", fmt.Errorf("not a git repository: %s does not exist", cwd)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("not a git repository: %s is not a directory", cwd)
+		}
+	}
+
 	args := []string{"rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir"}
 	if cwd != "" {
 		args = append([]string{"-C", cwd}, args...)
 	}
 
-	output, err := git(args...).Output()
+	// Call git directly so we don't prepend -C with an unset rootDir.
+	output, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
-		return ""
+		return "", gitRootError(output, err)
 	}
 
-	dirs := strings.Split(string(output), "\n")
-	if len(dirs) < 3 {
-		return ""
+	root, err := parseRootDir(string(output))
+	if err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func gitRootError(output []byte, err error) error {
+	msg := strings.TrimSpace(string(output))
+	if strings.Contains(msg, "not a git repository") {
+		if cwd != "" {
+			return fmt.Errorf("not a git repository: %s", cwd)
+		}
+		return fmt.Errorf("not a git repository")
+	}
+	if msg != "" {
+		return fmt.Errorf("failed to find git root: %s", msg)
+	}
+	return fmt.Errorf("failed to find git root: %w", err)
+}
+
+func parseRootDir(output string) (string, error) {
+	dirs := strings.Split(output, "\n")
+	if len(dirs) < 3 || dirs[0] == "" || dirs[2] == "" {
+		return "", fmt.Errorf("failed to find git root: unexpected rev-parse output")
 	}
 
 	// If the common dir and the git dir are the same, we are in the main repo
 	if dirs[0] == dirs[1] {
-		return path.Dir(dirs[2])
+		return filepath.Dir(dirs[2]), nil
 	}
 
 	// If the common dir and the git dir are different, we are in a worktree, use
 	// the common dir
-	return path.Dir(dirs[0])
+	return filepath.Dir(dirs[0]), nil
+}
+
+func syncDefaultBranch(current, defaultBranch string, checkout, pull func() error) error {
+	if current != defaultBranch {
+		if err := checkout(); err != nil {
+			return err
+		}
+	}
+	return pull()
 }
 
 func getDefaultBranch() (string, error) {
@@ -369,48 +440,116 @@ func staleRemoteTracking(local []string, remoteHeads map[string]struct{}, remote
 	return stale
 }
 
-func getBranches() (struct {
+type Branches struct {
 	DeletedBranches      []string
 	WorktreeBranches     []string
 	WorktreePoolBranches []string
-}, error) {
-	var result struct {
-		DeletedBranches      []string
-		WorktreeBranches     []string
-		WorktreePoolBranches []string
-	}
+	WorktreePaths        map[string]string
+}
 
-	cmd := git("branch", "-vv")
+type localBranch struct {
+	Name     string
+	Upstream string
+	Gone     bool
+}
+
+func getBranches() (Branches, error) {
+	cmd := git("for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:track)", "refs/heads")
 	output, err := cmd.Output()
 	if err != nil {
-		return result, fmt.Errorf("failed to get branch info: %w", err)
+		return Branches{}, fmt.Errorf("failed to get branch info: %w", err)
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	wtCmd := git("worktree", "list", "--porcelain")
+	wtOutput, err := wtCmd.Output()
+	if err != nil {
+		return Branches{}, fmt.Errorf("failed to get worktree list: %w", err)
+	}
+
+	worktrees := parseWorktreeList(string(wtOutput))
+	return classifyBranches(parseForEachRef(string(output)), worktrees, rootDir), nil
+}
+
+func parseForEachRef(output string) []localBranch {
+	var branches []localBranch
+	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
+		if line == "" {
+			continue
+		}
 
-		if regexp.MustCompile(`origin/.*: gone\]`).MatchString(line) {
-			parts := strings.Fields(line)
+		parts := strings.Split(line, "\t")
+		for len(parts) < 3 {
+			parts = append(parts, "")
+		}
+		if parts[0] == "" {
+			continue
+		}
 
-			if strings.HasPrefix(line, "+") && len(parts) >= 2 {
-				result.WorktreeBranches = append(result.WorktreeBranches, parts[1])
-				result.DeletedBranches = append(result.DeletedBranches, parts[1])
-			} else if len(parts) > 0 {
-				result.DeletedBranches = append(result.DeletedBranches, parts[0])
-			}
-		} else if strings.HasPrefix(line, "+") {
-			parts := strings.Fields(line)
-			branch := parts[1]
-			path := parts[3][1 : len(parts[3])-1]
+		branches = append(branches, localBranch{
+			Name:     parts[0],
+			Upstream: parts[1],
+			Gone:     strings.Contains(parts[2], "gone"),
+		})
+	}
+	return branches
+}
 
-			if worktreeBranch(path) == branch {
-				result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch)
+func parseWorktreeList(output string) map[string]string {
+	paths := make(map[string]string)
+	var worktreePath string
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			worktreePath = ""
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			worktreePath = rest
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "branch "); ok {
+			if branch, ok := strings.CutPrefix(rest, "refs/heads/"); ok && worktreePath != "" {
+				paths[branch] = worktreePath
 			}
 		}
 	}
 
-	return result, nil
+	return paths
+}
+
+func classifyBranches(branches []localBranch, worktrees map[string]string, root string) Branches {
+	result := Branches{WorktreePaths: worktrees}
+
+	for _, branch := range branches {
+		wtPath, checkedOut := worktrees[branch.Name]
+		linked := checkedOut && filepath.Clean(wtPath) != filepath.Clean(root)
+
+		if branch.Gone {
+			result.DeletedBranches = append(result.DeletedBranches, branch.Name)
+			if linked {
+				result.WorktreeBranches = append(result.WorktreeBranches, branch.Name)
+			}
+			continue
+		}
+
+		if linked && worktreeBranchAt(root, wtPath) == branch.Name {
+			result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch.Name)
+		}
+	}
+
+	return result
+}
+
+func worktreePathFor(paths map[string]string, branch string) (string, error) {
+	path, ok := paths[branch]
+	if !ok || path == "" {
+		return "", fmt.Errorf("worktree not found for branch %s", branch)
+	}
+	return path, nil
 }
 
 func deleteBranch(branch string, outputChan chan<- string) error {
@@ -421,63 +560,37 @@ func deleteBranch(branch string, outputChan chan<- string) error {
 // worktreeBranch derives the branch name for a worktree by stripping the main
 // repo directory name prefix (worktree dirs are named "<repo>-<branch>").
 func worktreeBranch(worktreePath string) string {
-	prefix := filepath.Base(rootDir) + "-"
+	return worktreeBranchAt(rootDir, worktreePath)
+}
+
+func worktreeBranchAt(root, worktreePath string) string {
+	prefix := filepath.Base(root) + "-"
 	return strings.TrimPrefix(filepath.Base(worktreePath), prefix)
 }
 
-func getWorktreePath(branch string) (string, error) {
-	cmd := git("worktree", "list", "--porcelain")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree list: %w", err)
-	}
-
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	var worktreePath string
-	var foundBranch bool
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "worktree ") {
-			worktreePath = strings.TrimPrefix(line, "worktree ")
-		} else if strings.HasPrefix(line, "branch ") {
-			if strings.Contains(line, "refs/heads/"+branch) {
-				foundBranch = true
-				break
-			}
+func worktreeResetSteps(root, worktreePath, defaultBranch string, branchExists bool) [][]string {
+	branch := worktreeBranchAt(root, worktreePath)
+	if branchExists {
+		return [][]string{
+			{"-C", worktreePath, "rebase", defaultBranch, branch},
+			{"-C", worktreePath, "checkout", branch},
 		}
 	}
-
-	if !foundBranch {
-		return "", fmt.Errorf("worktree not found for branch %s", branch)
+	return [][]string{
+		{"-C", worktreePath, "checkout", "-b", branch, defaultBranch},
 	}
-
-	return worktreePath, nil
 }
 
 func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string) error {
-	worktreeBranch := worktreeBranch(worktreePath)
+	branch := worktreeBranch(worktreePath)
+	exists := streamer.RunCommand(git("show-ref", "--verify", "--quiet", "refs/heads/"+branch), outputChan) == nil
 
-	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
-	if err := streamer.RunCommand(cmd, outputChan); err == nil {
-		// Rebase the branch onto the default branch
-		if err := rebaseWorktree(worktreePath, worktreeBranch, defaultBranch, outputChan); err != nil {
+	for _, args := range worktreeResetSteps(rootDir, worktreePath, defaultBranch, exists) {
+		if err := streamer.RunCommand(git(args...), outputChan); err != nil {
 			return err
 		}
-
-		// Checkout the branch in the worktree
-		cmd = git("-C", worktreePath, "checkout", worktreeBranch)
-		return streamer.RunCommand(cmd, outputChan)
 	}
-
-	// Branch doesn't exist, create and checkout in the worktree
-	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch, defaultBranch)
-	return streamer.RunCommand(cmd, outputChan)
-}
-
-func rebaseWorktree(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
-	cmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
-	return streamer.RunCommand(cmd, outputChan)
+	return nil
 }
 
 func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
