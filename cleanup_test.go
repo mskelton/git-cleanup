@@ -65,6 +65,96 @@ func TestParseRootDir(t *testing.T) {
 	})
 }
 
+func TestParseForEachRef(t *testing.T) {
+	got := parseForEachRef("" +
+		"main\trefs/remotes/origin/main\t\n" +
+		"old\trefs/remotes/origin/old\t[gone]\n" +
+		"feature/x\trefs/remotes/origin/feature/x\t[ahead 1]\n" +
+		"local\t\t\n")
+
+	if len(got) != 4 {
+		t.Fatalf("got %d branches, want 4", len(got))
+	}
+	if got[0].Name != "main" || got[0].Gone {
+		t.Fatalf("main: %+v", got[0])
+	}
+	if got[1].Name != "old" || !got[1].Gone {
+		t.Fatalf("old: %+v", got[1])
+	}
+	if got[2].Name != "feature/x" || got[2].Gone {
+		t.Fatalf("feature/x: %+v", got[2])
+	}
+	if got[3].Name != "local" || got[3].Upstream != "" || got[3].Gone {
+		t.Fatalf("local: %+v", got[3])
+	}
+}
+
+func TestParseWorktreeList(t *testing.T) {
+	got := parseWorktreeList(`worktree /repo
+HEAD abc
+branch refs/heads/main
+
+worktree /repo-foo
+HEAD def
+branch refs/heads/foo
+
+worktree /repo-foobar
+HEAD ghi
+branch refs/heads/foobar
+
+worktree /repo-detached
+HEAD jkl
+detached
+`)
+
+	if got["foo"] != "/repo-foo" {
+		t.Fatalf("foo: %q", got["foo"])
+	}
+	if got["foobar"] != "/repo-foobar" {
+		t.Fatalf("foobar: %q", got["foobar"])
+	}
+	if _, ok := got["detached"]; ok {
+		t.Fatal("detached HEAD should not be mapped")
+	}
+	if _, err := worktreePathFor(got, "foo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktreePathFor(got, "fo"); err == nil {
+		t.Fatal("prefix match should not find fo")
+	}
+}
+
+func TestClassifyBranches(t *testing.T) {
+	root := "/repo"
+	worktrees := map[string]string{
+		"main":    "/repo",
+		"old":     "/repo",
+		"gone-wt": "/repo-gone-wt",
+		"feature": "/repo-feature",
+		"scratch": "/repo-scratch",
+	}
+	branches := []localBranch{
+		{Name: "main", Gone: true},
+		{Name: "old", Gone: true},
+		{Name: "gone-wt", Gone: true},
+		{Name: "feature", Gone: false},
+		{Name: "scratch", Gone: false},
+		{Name: "local-only", Gone: false},
+	}
+
+	got := classifyBranches(branches, worktrees, root)
+
+	if strings.Join(got.DeletedBranches, ",") != "main,old,gone-wt" {
+		t.Fatalf("deleted: %v", got.DeletedBranches)
+	}
+	if strings.Join(got.WorktreeBranches, ",") != "gone-wt" {
+		t.Fatalf("worktree: %v", got.WorktreeBranches)
+	}
+	if strings.Join(got.WorktreePoolBranches, ",") != "feature,scratch" {
+		t.Fatalf("pool: %v", got.WorktreePoolBranches)
+	}
+}
+
 func TestFormatElapsed(t *testing.T) {
 	if got := formatElapsed(4 * time.Second); got != "4s" {
 		t.Fatalf("got %q", got)

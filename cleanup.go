@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -98,7 +97,7 @@ func cleanup() error {
 
 	// Reset worktrees
 	for _, branch := range branches.WorktreeBranches {
-		worktreePath, err := getWorktreePath(branch)
+		worktreePath, err := worktreePathFor(branches.WorktreePaths, branch)
 		if err != nil {
 			red.Printf("Error finding worktree for branch %s: %v\n", branch, err)
 			continue
@@ -128,7 +127,7 @@ func cleanup() error {
 	if len(branches.WorktreePoolBranches) > 0 {
 		if err := runStep("Rebasing worktree pool", func(outputChan chan<- string) error {
 			for _, branch := range branches.WorktreePoolBranches {
-				worktreePath, err := getWorktreePath(branch)
+				worktreePath, err := worktreePathFor(branches.WorktreePaths, branch)
 				if err != nil {
 					return err
 				}
@@ -411,48 +410,116 @@ func staleRemoteTracking(local []string, remoteHeads map[string]struct{}, remote
 	return stale
 }
 
-func getBranches() (struct {
+type Branches struct {
 	DeletedBranches      []string
 	WorktreeBranches     []string
 	WorktreePoolBranches []string
-}, error) {
-	var result struct {
-		DeletedBranches      []string
-		WorktreeBranches     []string
-		WorktreePoolBranches []string
-	}
+	WorktreePaths        map[string]string
+}
 
-	cmd := git("branch", "-vv")
+type localBranch struct {
+	Name     string
+	Upstream string
+	Gone     bool
+}
+
+func getBranches() (Branches, error) {
+	cmd := git("for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:track)", "refs/heads")
 	output, err := cmd.Output()
 	if err != nil {
-		return result, fmt.Errorf("failed to get branch info: %w", err)
+		return Branches{}, fmt.Errorf("failed to get branch info: %w", err)
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	wtCmd := git("worktree", "list", "--porcelain")
+	wtOutput, err := wtCmd.Output()
+	if err != nil {
+		return Branches{}, fmt.Errorf("failed to get worktree list: %w", err)
+	}
+
+	worktrees := parseWorktreeList(string(wtOutput))
+	return classifyBranches(parseForEachRef(string(output)), worktrees, rootDir), nil
+}
+
+func parseForEachRef(output string) []localBranch {
+	var branches []localBranch
+	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
+		if line == "" {
+			continue
+		}
 
-		if regexp.MustCompile(`origin/.*: gone\]`).MatchString(line) {
-			parts := strings.Fields(line)
+		parts := strings.Split(line, "\t")
+		for len(parts) < 3 {
+			parts = append(parts, "")
+		}
+		if parts[0] == "" {
+			continue
+		}
 
-			if strings.HasPrefix(line, "+") && len(parts) >= 2 {
-				result.WorktreeBranches = append(result.WorktreeBranches, parts[1])
-				result.DeletedBranches = append(result.DeletedBranches, parts[1])
-			} else if len(parts) > 0 {
-				result.DeletedBranches = append(result.DeletedBranches, parts[0])
-			}
-		} else if strings.HasPrefix(line, "+") {
-			parts := strings.Fields(line)
-			branch := parts[1]
-			path := parts[3][1 : len(parts[3])-1]
+		branches = append(branches, localBranch{
+			Name:     parts[0],
+			Upstream: parts[1],
+			Gone:     strings.Contains(parts[2], "gone"),
+		})
+	}
+	return branches
+}
 
-			if worktreeBranch(path) == branch {
-				result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch)
+func parseWorktreeList(output string) map[string]string {
+	paths := make(map[string]string)
+	var worktreePath string
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			worktreePath = ""
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			worktreePath = rest
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "branch "); ok {
+			if branch, ok := strings.CutPrefix(rest, "refs/heads/"); ok && worktreePath != "" {
+				paths[branch] = worktreePath
 			}
 		}
 	}
 
-	return result, nil
+	return paths
+}
+
+func classifyBranches(branches []localBranch, worktrees map[string]string, root string) Branches {
+	result := Branches{WorktreePaths: worktrees}
+
+	for _, branch := range branches {
+		wtPath, checkedOut := worktrees[branch.Name]
+		linked := checkedOut && filepath.Clean(wtPath) != filepath.Clean(root)
+
+		if branch.Gone {
+			result.DeletedBranches = append(result.DeletedBranches, branch.Name)
+			if linked {
+				result.WorktreeBranches = append(result.WorktreeBranches, branch.Name)
+			}
+			continue
+		}
+
+		if linked && worktreeBranchAt(root, wtPath) == branch.Name {
+			result.WorktreePoolBranches = append(result.WorktreePoolBranches, branch.Name)
+		}
+	}
+
+	return result
+}
+
+func worktreePathFor(paths map[string]string, branch string) (string, error) {
+	path, ok := paths[branch]
+	if !ok || path == "" {
+		return "", fmt.Errorf("worktree not found for branch %s", branch)
+	}
+	return path, nil
 }
 
 func deleteBranch(branch string, outputChan chan<- string) error {
@@ -463,38 +530,12 @@ func deleteBranch(branch string, outputChan chan<- string) error {
 // worktreeBranch derives the branch name for a worktree by stripping the main
 // repo directory name prefix (worktree dirs are named "<repo>-<branch>").
 func worktreeBranch(worktreePath string) string {
-	prefix := filepath.Base(rootDir) + "-"
-	return strings.TrimPrefix(filepath.Base(worktreePath), prefix)
+	return worktreeBranchAt(rootDir, worktreePath)
 }
 
-func getWorktreePath(branch string) (string, error) {
-	cmd := git("worktree", "list", "--porcelain")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree list: %w", err)
-	}
-
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	var worktreePath string
-	var foundBranch bool
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "worktree ") {
-			worktreePath = strings.TrimPrefix(line, "worktree ")
-		} else if strings.HasPrefix(line, "branch ") {
-			if strings.Contains(line, "refs/heads/"+branch) {
-				foundBranch = true
-				break
-			}
-		}
-	}
-
-	if !foundBranch {
-		return "", fmt.Errorf("worktree not found for branch %s", branch)
-	}
-
-	return worktreePath, nil
+func worktreeBranchAt(root, worktreePath string) string {
+	prefix := filepath.Base(root) + "-"
+	return strings.TrimPrefix(filepath.Base(worktreePath), prefix)
 }
 
 func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string) error {
