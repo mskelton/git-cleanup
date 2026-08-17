@@ -65,6 +65,34 @@ func TestParseRootDir(t *testing.T) {
 	})
 }
 
+func TestGetRootDirNotARepo(t *testing.T) {
+	prev := cwd
+	cwd = t.TempDir()
+	t.Cleanup(func() { cwd = prev })
+
+	_, err := getRootDir()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestGetRootDirMissingCwd(t *testing.T) {
+	prev := cwd
+	cwd = "/this/path/does/not/exist"
+	t.Cleanup(func() { cwd = prev })
+
+	_, err := getRootDir()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestParseForEachRef(t *testing.T) {
 	got := parseForEachRef("" +
 		"main\trefs/remotes/origin/main\t\n" +

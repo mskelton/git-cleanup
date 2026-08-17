@@ -149,15 +149,25 @@ func cleanup() error {
 }
 
 func getRootDir() (string, error) {
+	if cwd != "" {
+		info, err := os.Stat(cwd)
+		if err != nil {
+			return "", fmt.Errorf("not a git repository: %s does not exist", cwd)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("not a git repository: %s is not a directory", cwd)
+		}
+	}
+
 	args := []string{"rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir"}
 	if cwd != "" {
 		args = append([]string{"-C", cwd}, args...)
 	}
 
 	// Call git directly so we don't prepend -C with an unset rootDir.
-	output, err := exec.Command("git", args...).Output()
+	output, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to find git root: %w", err)
+		return "", gitRootError(output, err)
 	}
 
 	root, err := parseRootDir(string(output))
@@ -165,6 +175,20 @@ func getRootDir() (string, error) {
 		return "", err
 	}
 	return root, nil
+}
+
+func gitRootError(output []byte, err error) error {
+	msg := strings.TrimSpace(string(output))
+	if strings.Contains(msg, "not a git repository") {
+		if cwd != "" {
+			return fmt.Errorf("not a git repository: %s", cwd)
+		}
+		return fmt.Errorf("not a git repository")
+	}
+	if msg != "" {
+		return fmt.Errorf("failed to find git root: %s", msg)
+	}
+	return fmt.Errorf("failed to find git root: %w", err)
 }
 
 func parseRootDir(output string) (string, error) {
