@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +182,91 @@ func TestClassifyBranches(t *testing.T) {
 	if strings.Join(got.WorktreePoolBranches, ",") != "feature,scratch" {
 		t.Fatalf("pool: %v", got.WorktreePoolBranches)
 	}
+}
+
+func TestSyncDefaultBranchSkipsPullWhenCheckoutFails(t *testing.T) {
+	pulled := false
+	err := syncDefaultBranch("feature", "main", func() error {
+		return errors.New("checkout failed")
+	}, func() error {
+		pulled = true
+		return nil
+	})
+	if err == nil || err.Error() != "checkout failed" {
+		t.Fatalf("got %v", err)
+	}
+	if pulled {
+		t.Fatal("pull ran after checkout failed")
+	}
+}
+
+func TestSyncDefaultBranchPullsWhenAlreadyOnDefault(t *testing.T) {
+	checkedOut := false
+	pulled := false
+	if err := syncDefaultBranch("main", "main", func() error {
+		checkedOut = true
+		return nil
+	}, func() error {
+		pulled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if checkedOut {
+		t.Fatal("checkout ran while already on the default branch")
+	}
+	if !pulled {
+		t.Fatal("expected pull")
+	}
+}
+
+func TestSyncDefaultBranchChecksOutThenPulls(t *testing.T) {
+	var steps []string
+	if err := syncDefaultBranch("feature", "main", func() error {
+		steps = append(steps, "checkout")
+		return nil
+	}, func() error {
+		steps = append(steps, "pull")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(steps, ",") != "checkout,pull" {
+		t.Fatalf("got %v", steps)
+	}
+}
+
+func TestWorktreeResetStepsRebasesExistingBranch(t *testing.T) {
+	got := worktreeResetSteps("/repo", "/repo-feature", "main", true)
+	want := [][]string{
+		{"-C", "/repo-feature", "rebase", "main", "feature"},
+		{"-C", "/repo-feature", "checkout", "feature"},
+	}
+	if !sameSteps(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWorktreeResetStepsCreatesMissingBranch(t *testing.T) {
+	got := worktreeResetSteps("/repo", "/repo-feature", "main", false)
+	want := [][]string{
+		{"-C", "/repo-feature", "checkout", "-b", "feature", "main"},
+	}
+	if !sameSteps(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func sameSteps(got, want [][]string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if strings.Join(got[i], " ") != strings.Join(want[i], " ") {
+			return false
+		}
+	}
+	return true
 }
 
 func TestFormatElapsed(t *testing.T) {

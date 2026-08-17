@@ -67,17 +67,14 @@ func cleanup() error {
 		return fmt.Errorf("failed to get current branch: %w", err)
 	}
 
-	if currentBranch != defaultBranch {
-		if err := runStep("Checking out default branch", func(outputChan chan<- string) error {
+	if err := syncDefaultBranch(currentBranch, defaultBranch, func() error {
+		return runStep("Checking out default branch", func(outputChan chan<- string) error {
 			return checkoutBranch(defaultBranch, outputChan)
-		}); err != nil {
-			return err
-		}
-	}
-
-	// Pull latest changes
-	if err := runStep("Pulling latest changes", func(outputChan chan<- string) error {
-		return pullBranch(defaultBranch, outputChan)
+		})
+	}, func() error {
+		return runStep("Pulling latest changes", func(outputChan chan<- string) error {
+			return pullBranch(defaultBranch, outputChan)
+		})
 	}); err != nil {
 		return err
 	}
@@ -205,6 +202,15 @@ func parseRootDir(output string) (string, error) {
 	// If the common dir and the git dir are different, we are in a worktree, use
 	// the common dir
 	return filepath.Dir(dirs[0]), nil
+}
+
+func syncDefaultBranch(current, defaultBranch string, checkout, pull func() error) error {
+	if current != defaultBranch {
+		if err := checkout(); err != nil {
+			return err
+		}
+	}
+	return pull()
 }
 
 func getDefaultBranch() (string, error) {
@@ -562,29 +568,29 @@ func worktreeBranchAt(root, worktreePath string) string {
 	return strings.TrimPrefix(filepath.Base(worktreePath), prefix)
 }
 
-func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string) error {
-	worktreeBranch := worktreeBranch(worktreePath)
-
-	cmd := git("show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranch)
-	if err := streamer.RunCommand(cmd, outputChan); err == nil {
-		// Rebase the branch onto the default branch
-		if err := rebaseWorktree(worktreePath, worktreeBranch, defaultBranch, outputChan); err != nil {
-			return err
+func worktreeResetSteps(root, worktreePath, defaultBranch string, branchExists bool) [][]string {
+	branch := worktreeBranchAt(root, worktreePath)
+	if branchExists {
+		return [][]string{
+			{"-C", worktreePath, "rebase", defaultBranch, branch},
+			{"-C", worktreePath, "checkout", branch},
 		}
-
-		// Checkout the branch in the worktree
-		cmd = git("-C", worktreePath, "checkout", worktreeBranch)
-		return streamer.RunCommand(cmd, outputChan)
 	}
-
-	// Branch doesn't exist, create and checkout in the worktree
-	cmd = git("-C", worktreePath, "checkout", "-b", worktreeBranch, defaultBranch)
-	return streamer.RunCommand(cmd, outputChan)
+	return [][]string{
+		{"-C", worktreePath, "checkout", "-b", branch, defaultBranch},
+	}
 }
 
-func rebaseWorktree(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
-	cmd := git("-C", worktreePath, "rebase", defaultBranch, branch)
-	return streamer.RunCommand(cmd, outputChan)
+func resetWorktree(defaultBranch, worktreePath string, outputChan chan<- string) error {
+	branch := worktreeBranch(worktreePath)
+	exists := streamer.RunCommand(git("show-ref", "--verify", "--quiet", "refs/heads/"+branch), outputChan) == nil
+
+	for _, args := range worktreeResetSteps(rootDir, worktreePath, defaultBranch, exists) {
+		if err := streamer.RunCommand(git(args...), outputChan); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func rebaseWorktreePoolBranch(worktreePath, branch, defaultBranch string, outputChan chan<- string) error {
