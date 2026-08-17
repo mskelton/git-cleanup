@@ -184,26 +184,33 @@ func TestClassifyBranches(t *testing.T) {
 	}
 }
 
-func TestSyncDefaultBranchSkipsPullWhenCheckoutFails(t *testing.T) {
-	pulled := false
+func TestSyncDefaultBranchSkipsCheckoutWhenFetchFails(t *testing.T) {
+	checkedOut := false
 	err := syncDefaultBranch("feature", "main", func() error {
-		return errors.New("checkout failed")
+		return errors.New("fetch failed")
 	}, func() error {
-		pulled = true
+		checkedOut = true
+		return nil
+	}, func() error {
+		t.Fatal("pull ran while switching branches")
 		return nil
 	})
-	if err == nil || err.Error() != "checkout failed" {
+	if err == nil || err.Error() != "fetch failed" {
 		t.Fatalf("got %v", err)
 	}
-	if pulled {
-		t.Fatal("pull ran after checkout failed")
+	if checkedOut {
+		t.Fatal("checkout ran after fetch failed")
 	}
 }
 
 func TestSyncDefaultBranchPullsWhenAlreadyOnDefault(t *testing.T) {
+	fetched := false
 	checkedOut := false
 	pulled := false
 	if err := syncDefaultBranch("main", "main", func() error {
+		fetched = true
+		return nil
+	}, func() error {
 		checkedOut = true
 		return nil
 	}, func() error {
@@ -211,6 +218,9 @@ func TestSyncDefaultBranchPullsWhenAlreadyOnDefault(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if fetched {
+		t.Fatal("fetch dest ran while already on the default branch")
 	}
 	if checkedOut {
 		t.Fatal("checkout ran while already on the default branch")
@@ -220,9 +230,12 @@ func TestSyncDefaultBranchPullsWhenAlreadyOnDefault(t *testing.T) {
 	}
 }
 
-func TestSyncDefaultBranchChecksOutThenPulls(t *testing.T) {
+func TestSyncDefaultBranchFetchesThenChecksOut(t *testing.T) {
 	var steps []string
 	if err := syncDefaultBranch("feature", "main", func() error {
+		steps = append(steps, "fetch")
+		return nil
+	}, func() error {
 		steps = append(steps, "checkout")
 		return nil
 	}, func() error {
@@ -231,7 +244,7 @@ func TestSyncDefaultBranchChecksOutThenPulls(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(steps, ",") != "checkout,pull" {
+	if strings.Join(steps, ",") != "fetch,checkout" {
 		t.Fatalf("got %v", steps)
 	}
 }

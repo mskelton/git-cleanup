@@ -68,6 +68,10 @@ func cleanup() error {
 	}
 
 	if err := syncDefaultBranch(currentBranch, defaultBranch, func() error {
+		return runStep("Fetching latest changes", func(outputChan chan<- string) error {
+			return fetchBranch(defaultBranch, outputChan)
+		})
+	}, func() error {
 		return runStep("Checking out default branch", func(outputChan chan<- string) error {
 			return checkoutBranch(defaultBranch, outputChan)
 		})
@@ -204,11 +208,12 @@ func parseRootDir(output string) (string, error) {
 	return filepath.Dir(dirs[0]), nil
 }
 
-func syncDefaultBranch(current, defaultBranch string, checkout, pull func() error) error {
+func syncDefaultBranch(current, defaultBranch string, fetch, checkout, pull func() error) error {
 	if current != defaultBranch {
-		if err := checkout(); err != nil {
+		if err := fetch(); err != nil {
 			return err
 		}
+		return checkout()
 	}
 	return pull()
 }
@@ -248,13 +253,18 @@ func getCurrentBranch() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+func fetchBranch(branch string, outputChan chan<- string) error {
+	cmd := git("fetch", "--progress", "origin", branch+":"+branch)
+	return streamer.RunCommand(cmd, outputChan)
+}
+
 func checkoutBranch(branch string, outputChan chan<- string) error {
 	cmd := git("checkout", branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
 func pullBranch(branch string, outputChan chan<- string) error {
-	cmd := git("pull", "--progress", "origin", branch)
+	cmd := git("pull", "--progress", "--ff-only", "origin", branch)
 	return streamer.RunCommand(cmd, outputChan)
 }
 
