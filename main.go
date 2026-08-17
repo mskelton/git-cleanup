@@ -16,11 +16,11 @@ func main() {
 		Use:   "git-cleanup",
 		Short: "Clean up your git repositories",
 		Long: `Git Cleanup is a tool that helps maintain clean git repositories by:
-- Pulling latest changes from the default branch
-- Pruning local branches that have been removed on remote
-- Deleting local branches that no longer exist on remote
-- Removing worktrees for deleted branches
-- Auto-retrying git operations that fail due to ref locking issues`,
+- Checking out and pulling the default branch
+- Pruning stale remote-tracking refs
+- Deleting local branches whose upstream is gone
+- Resetting worktrees for deleted branches back to a pool branch
+- Rebasing worktree-pool branches (<repo>-<branch> directories) onto the default branch`,
 		Version:       "1.0.0",
 		SilenceErrors: true,
 		SilenceUsage:  true,

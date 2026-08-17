@@ -4,11 +4,16 @@ Cleanup your git repos
 
 ## Features
 
-- Pulls latest changes from default branch
-- Prunes local branches
-- Deletes local branches that have been removed on remote
-- Removes worktrees for deleted branches
-- Reliable default branch detection (works with any git setup)
+- Checks out and pulls the default branch
+- Prunes stale remote-tracking refs
+- Deletes local branches whose upstream is gone
+- Resets worktrees that were on deleted branches back to a pool branch
+- Rebases worktree-pool checkouts onto the default branch
+
+Worktree pool directories are expected to be named `<repo>-<branch>` next to
+the main repo (for example `git-cleanup-feature`). When a branch is gone, that
+worktree is reset to a local branch matching the directory name. Active pool
+worktrees are rebased onto the default branch.
 
 ## Installation
 
