@@ -37,6 +37,34 @@ func TestShortenRemoteURL(t *testing.T) {
 	}
 }
 
+func TestParseRootDir(t *testing.T) {
+	t.Run("main repo", func(t *testing.T) {
+		got, err := parseRootDir("/repo/.git\n.git\n/repo/.git\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "/repo" {
+			t.Fatalf("got %q, want /repo", got)
+		}
+	})
+
+	t.Run("worktree", func(t *testing.T) {
+		got, err := parseRootDir("/repo/.git\n/repo/.git/worktrees/feature\n/repo/.git/worktrees/feature\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "/repo" {
+			t.Fatalf("got %q, want /repo", got)
+		}
+	})
+
+	t.Run("incomplete output", func(t *testing.T) {
+		if _, err := parseRootDir(".git\n"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
 func TestFormatElapsed(t *testing.T) {
 	if got := formatElapsed(4 * time.Second); got != "4s" {
 		t.Fatalf("got %q", got)

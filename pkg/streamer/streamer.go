@@ -177,7 +177,7 @@ func handleCompletion(streamer *OutputStreamer, err error) {
 	streamer.pass()
 }
 
-func Run(title string, operation func(chan<- string) error) {
+func Run(title string, operation func(chan<- string) error) error {
 	streamer := NewOutputStreamer(title)
 	streamer.start()
 
@@ -193,7 +193,9 @@ func Run(title string, operation func(chan<- string) error) {
 		streamer.addOutput(line)
 	}
 
-	handleCompletion(streamer, <-errChan)
+	err := <-errChan
+	handleCompletion(streamer, err)
+	return err
 }
 
 func RunCommand(cmd *exec.Cmd, outputChan chan<- string) error {

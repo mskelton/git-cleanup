@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,6 +21,23 @@ import (
 
 var rootDir string
 
+// displayedError is an operation failure already shown by the streamer UI.
+type displayedError struct{ error }
+
+func (e displayedError) Unwrap() error { return e.error }
+
+func isDisplayedError(err error) bool {
+	var displayed displayedError
+	return errors.As(err, &displayed)
+}
+
+func runStep(title string, operation func(chan<- string) error) error {
+	if err := streamer.Run(title, operation); err != nil {
+		return displayedError{err}
+	}
+	return nil
+}
+
 func git(args ...string) *exec.Cmd {
 	if !slices.Contains(args, "-C") {
 		args = append([]string{"-C", rootDir}, args...)
@@ -33,7 +50,11 @@ func cleanup() error {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 
-	rootDir = getRootDir()
+	var err error
+	rootDir, err = getRootDir()
+	if err != nil {
+		return err
+	}
 
 	// Get default branch
 	defaultBranch, err := getDefaultBranch()
@@ -48,20 +69,26 @@ func cleanup() error {
 	}
 
 	if currentBranch != defaultBranch {
-		streamer.Run("Checking out default branch", func(outputChan chan<- string) error {
+		if err := runStep("Checking out default branch", func(outputChan chan<- string) error {
 			return checkoutBranch(defaultBranch, outputChan)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Pull latest changes
-	streamer.Run("Pulling latest changes", func(outputChan chan<- string) error {
+	if err := runStep("Pulling latest changes", func(outputChan chan<- string) error {
 		return pullBranch(defaultBranch, outputChan)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Drop stale remote-tracking refs so gone locals show up later
-	streamer.Run("Pruning stale remotes", func(outputChan chan<- string) error {
+	if err := runStep("Pruning stale remotes", func(outputChan chan<- string) error {
 		return pruneRemote(outputChan)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Get deleted branches
 	branches, err := getBranches()
@@ -81,21 +108,25 @@ func cleanup() error {
 		homeDir, _ := os.UserHomeDir()
 		relativePath := strings.Replace(worktreePath, homeDir, "~", 1)
 
-		streamer.Run(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
+		if err := runStep(fmt.Sprintf("Resetting worktree: %s", relativePath), func(outputChan chan<- string) error {
 			return resetWorktree(defaultBranch, worktreePath, outputChan)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Delete branches
 	for _, branch := range branches.DeletedBranches {
-		streamer.Run(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
+		if err := runStep(fmt.Sprintf("Deleting branch: %s", branch), func(outputChan chan<- string) error {
 			return deleteBranch(branch, outputChan)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Rebase worktree pool
 	if len(branches.WorktreePoolBranches) > 0 {
-		streamer.Run("Rebasing worktree pool", func(outputChan chan<- string) error {
+		if err := runStep("Rebasing worktree pool", func(outputChan chan<- string) error {
 			for _, branch := range branches.WorktreePoolBranches {
 				worktreePath, err := getWorktreePath(branch)
 				if err != nil {
@@ -109,37 +140,48 @@ func cleanup() error {
 			}
 
 			return nil
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	green.Println("✔ Git cleanup completed")
 	return nil
 }
 
-func getRootDir() string {
+func getRootDir() (string, error) {
 	args := []string{"rev-parse", "--git-common-dir", "--git-dir", "--absolute-git-dir"}
 	if cwd != "" {
 		args = append([]string{"-C", cwd}, args...)
 	}
 
-	output, err := git(args...).Output()
+	// Call git directly so we don't prepend -C with an unset rootDir.
+	output, err := exec.Command("git", args...).Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("failed to find git root: %w", err)
 	}
 
-	dirs := strings.Split(string(output), "\n")
-	if len(dirs) < 3 {
-		return ""
+	root, err := parseRootDir(string(output))
+	if err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func parseRootDir(output string) (string, error) {
+	dirs := strings.Split(output, "\n")
+	if len(dirs) < 3 || dirs[0] == "" || dirs[2] == "" {
+		return "", fmt.Errorf("failed to find git root: unexpected rev-parse output")
 	}
 
 	// If the common dir and the git dir are the same, we are in the main repo
 	if dirs[0] == dirs[1] {
-		return path.Dir(dirs[2])
+		return filepath.Dir(dirs[2]), nil
 	}
 
 	// If the common dir and the git dir are different, we are in a worktree, use
 	// the common dir
-	return path.Dir(dirs[0])
+	return filepath.Dir(dirs[0]), nil
 }
 
 func getDefaultBranch() (string, error) {

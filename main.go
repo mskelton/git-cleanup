@@ -21,7 +21,9 @@ func main() {
 - Deleting local branches that no longer exist on remote
 - Removing worktrees for deleted branches
 - Auto-retrying git operations that fail due to ref locking issues`,
-		Version: "1.0.0",
+		Version:       "1.0.0",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cleanup()
 		},
@@ -30,7 +32,9 @@ func main() {
 	rootCmd.Flags().StringVar(&cwd, "cwd", "", "Run commands in this directory")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if !isDisplayedError(err) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }
